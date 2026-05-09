@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anime Stream - Aniwatch API</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    /* ... (use the same styles from the previous Consumet example) ... */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #eee; padding: 2rem; max-width: 1200px; margin: 0 auto; }
+    h1 { margin-bottom: 1rem; color: #ff6b6b; }
+    .search-box { display: flex; gap: 0.5rem; margin-bottom: 2rem; }
+    #search-input { flex: 1; padding: 0.8rem 1rem; border-radius: 8px; border: 1px solid #444; background: #1e1e1e; color: #eee; font-size: 1rem; }
+    button { padding: 0.8rem 1.5rem; background: #ff6b6b; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background 0.2s; }
+    button:hover { background: #e55a5a; }
+    .results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
+    .anime-card { background: #1e1e1e; border-radius: 10px; overflow: hidden; cursor: pointer; transition: transform 0.2s; text-align: center; }
+    .anime-card:hover { transform: scale(1.03); border: 1px solid #ff6b6b; }
+    .anime-card img { width: 100%; height: 220px; object-fit: cover; }
+    .anime-card p { padding: 0.5rem; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .back-btn { margin-bottom: 1rem; }
+    .episode-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1.5rem 0; }
+    .episode-btn { background: #2a2a2a; border: 1px solid #444; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; color: #eee; }
+    .episode-btn.active { background: #ff6b6b; border-color: #ff6b6b; color: white; }
+    #video-container { margin-top: 1rem; background: black; border-radius: 12px; overflow: hidden; }
+    video { width: 100%; max-height: 70vh; }
+    .loading, .error { text-align: center; padding: 2rem; color: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>🍿 Anime Stream (Aniwatch)</h1>
+
+  <!-- Search UI -->
+  <div id="search-section">
+    <div class="search-box">
+      <input type="text" id="search-input" placeholder="Search anime..." />
+      <button id="search-btn">Search</button>
+    </div>
+    <div id="results" class="results-grid"></div>
+    <div id="search-error" class="error" style="display:none;"></div>
+  </div>
+
+  <!-- Anime details and player (hidden initially) -->
+  <div id="anime-section" style="display:none;">
+    <button id="back-btn" class="back-btn">← Back to search</button>
+    <h2 id="anime-title"></h2>
+    <img id="anime-cover" src="" style="max-width:200px; border-radius:8px;">
+    <p id="anime-synopsis" style="margin:1rem 0;"></p>
+    <div id="episode-list" class="episode-list"></div>
+    <div id="video-container" style="display:none;">
+      <video id="video-player" controls></video>
+    </div>
+    <div id="stream-error" class="error" style="display:none;"></div>
+  </div>
+
+  <script>
+    // Using the testing instance from ghoshRitesh12
+    const API_BASE = 'https://aniwatch-api-net.vercel.app/api/v2';
+
+    let currentAnimeId = null;
+    let currentEpisodes = [];
+    let hls = null;
+
+    async function fetchJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    }
+
+    async function searchAnime(query) {
+      const data = await fetchJSON(`${API_BASE}/search?keyword=${encodeURIComponent(query)}`);
+      return data.results || [];
+    }
+
+    async function getAnimeInfo(id) {
+      return await fetchJSON(`${API_BASE}/info/${id}`);
+    }
+
+    async function getEpisodeSources(episodeId) {
+      return await fetchJSON(`${API_BASE}/watch/${episodeId}`);
+    }
+
+    // UI Functions (same as before)
+    function showSearch() {
+      document.getElementById('search-section').style.display = 'block';
+      document.getElementById('anime-section').style.display = 'none';
+    }
+
+    function showAnime() {
+      document.getElementById('search-section').style.display = 'none';
+      document.getElementById('anime-section').style.display = 'block';
+    }
+
+    function displayResults(animes) {
+      const container = document.getElementById('results');
+      container.innerHTML = '';
+      if (!animes || animes.length === 0) {
+        container.innerHTML = '<p class="loading">No results found.</p>';
+        return;
+      }
+      animes.forEach(anime => {
+        const card = document.createElement('div');
+        card.className = 'anime-card';
+        card.innerHTML = `
+          <img src="${anime.img}" alt="${anime.title}" loading="lazy">
+          <p title="${anime.title}">${anime.title}</p>
+        `;
+        card.onclick = () => loadAnimeInfo(anime.id);
+        container.appendChild(card);
+      });
+    }
+
+    async function loadAnimeInfo(id) {
+      try {
+        document.getElementById('stream-error').style.display = 'none';
+        const info = await getAnimeInfo(id);
+        currentAnimeId = id;
+        currentEpisodes = info.episodes || [];
+        document.getElementById('anime-title').textContent = info.title;
+        document.getElementById('anime-cover').src = info.img || '';
+        document.getElementById('anime-synopsis').textContent = info.description || 'No description available.';
+        renderEpisodes(currentEpisodes);
+        showAnime();
+        document.getElementById('video-container').style.display = 'none';
+      } catch (err) {
+        alert('Failed to load anime info. Check console.');
+        console.error(err);
+      }
+    }
+
+    function renderEpisodes(episodes) {
+      const list = document.getElementById('episode-list');
+      list.innerHTML = '';
+      episodes.forEach((ep, index) => {
+        const btn = document.createElement('button');
+        btn.className = 'episode-btn';
+        btn.textContent = `Ep ${ep.number || index + 1}`;
+        btn.onclick = () => {
+          document.querySelectorAll('.episode-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          playEpisode(ep.episodeId);
+        };
+        list.appendChild(btn);
+      });
+    }
+
+    async function playEpisode(episodeId) {
+      const videoContainer = document.getElementById('video-container');
+      const video = document.getElementById('video-player');
+      const streamError = document.getElementById('stream-error');
+      streamError.style.display = 'none';
+
+      try {
+        const data = await getEpisodeSources(episodeId);
+        const sources = data.sources;
+        if (!sources || sources.length === 0) {
+          throw new Error('No streaming sources found.');
+        }
+        let streamUrl = sources.find(s => s.url.includes('.m3u8'))?.url || sources[0].url;
+
+        console.log('Stream URL:', streamUrl);
+
+        if (hls) {
+          hls.destroy();
+          hls = null;
+        }
+
+        if (streamUrl.includes('.m3u8')) {
+          if (Hls.isSupported()) {
+            hls = new Hls();
+            hls.loadSource(streamUrl);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              video.play().catch(() => {});
+            });
+          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = streamUrl;
+            video.play().catch(() => {});
+          } else {
+            throw new Error('HLS not supported in this browser.');
+          }
+        } else {
+          video.src = streamUrl;
+          video.play().catch(() => {});
+        }
+
+        videoContainer.style.display = 'block';
+      } catch (err) {
+        streamError.style.display = 'block';
+        streamError.textContent = '⚠️ ' + err.message + ' (Try another episode)';
+        console.error(err);
+      }
+    }
+
+    document.getElementById('search-btn').addEventListener('click', async () => {
+      const query = document.getElementById('search-input').value.trim();
+      if (!query) return;
+      document.getElementById('search-error').style.display = 'none';
+      document.getElementById('results').innerHTML = '<p class="loading">Searching...</p>';
+      try {
+        const results = await searchAnime(query);
+        displayResults(results);
+      } catch (err) {
+        document.getElementById('search-error').style.display = 'block';
+        document.getElementById('search-error').textContent = '⚠️ Search failed: ' + err.message;
+        document.getElementById('results').innerHTML = '';
+      }
+    });
+
+    document.getElementById('search-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') document.getElementById('search-btn').click();
+    });
+
+    document.getElementById('back-btn').addEventListener('click', showSearch);
+
+    window.addEventListener('beforeunload', () => {
+      if (hls) hls.destroy();
+    });
+  </script>
+</body>
+</html>
